@@ -51,10 +51,20 @@ once you've bought it for the Master System.)
 ## 4. Day-to-day use
 
 - **+ New Item**: photo → who's capturing → Job (with job #) or Stock →
-  description, qty, destination bin → Save.
+  description, qty, destination bin → Save. Every saved item is written
+  straight into that phone's on-device storage (IndexedDB) — nothing leaves
+  the phone unless you export it.
 - **Queue / Print**: every saved item, oldest first. Tap **Print label** to
   send it to the ZD621 (reconnects automatically if Bluetooth dropped). Tap
-  **Mark shelved** once it's physically placed in its bin.
+  **Mark shelved** once it's physically placed in its bin — the button then
+  becomes **✓ Shelved — tap to unshelve**, and tapping it again asks you to
+  confirm before reverting it. Tap **Delete** to permanently remove an item
+  from this device — also asks for confirmation first, and can't be undone.
+- **Tap a photo thumbnail** to open it full-size, with a **Print / Save as
+  PDF** button — this hands off to the phone's own Android print system
+  (same as printing from Chrome or Gmail), so it can be saved as a PDF or
+  sent to any printer already set up on the phone. This is separate from the
+  ZD621 label printing above.
 - **Export data**: downloads a JSON file of every record (including photos as
   embedded base64) — this is what will get imported into the Master System
   once that module exists. Do this at the end of each shift as a backup,

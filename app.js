@@ -47,6 +47,14 @@ function dbPut(item) {
   });
 }
 
+function dbDelete(id) {
+  return new Promise((resolve, reject) => {
+    const req = txStore('readwrite').delete(id);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
 // --- utils -------------------------------------------------------------
 
 function uuid() {
@@ -207,7 +215,7 @@ async function renderQueue() {
     const li = document.createElement('li');
     li.className = 'item-row';
     li.innerHTML = `
-      <img src="${item.photo || ''}">
+      <img class="thumb" data-id="${item.item_id}" src="${item.photo || ''}">
       <div class="item-meta">
         <div class="title">${item.description}</div>
         <div class="sub">${item.capture_type === 'job' ? 'Job ' + item.job_number : 'Stock'} · Qty ${item.qty} · Bin ${item.destination_bin}</div>
@@ -216,7 +224,10 @@ async function renderQueue() {
       </div>
       <div class="item-actions">
         <button data-action="print" data-id="${item.item_id}">Print label</button>
-        <button data-action="shelve" data-id="${item.item_id}">Mark shelved</button>
+        ${item.status === 'shelved'
+          ? `<button data-action="unshelve" data-id="${item.item_id}" class="shelved-btn">✓ Shelved — tap to unshelve</button>`
+          : `<button data-action="shelve" data-id="${item.item_id}">Mark shelved</button>`}
+        <button data-action="delete" data-id="${item.item_id}" class="danger-btn">Delete</button>
       </div>
     `;
     list.appendChild(li);
@@ -228,6 +239,25 @@ async function renderQueue() {
   list.querySelectorAll('button[data-action="shelve"]').forEach(btn => {
     btn.addEventListener('click', () => markShelved(btn.dataset.id));
   });
+  list.querySelectorAll('button[data-action="unshelve"]').forEach(btn => {
+    btn.addEventListener('click', () => unshelveItem(btn.dataset.id));
+  });
+  list.querySelectorAll('button[data-action="delete"]').forEach(btn => {
+    btn.addEventListener('click', () => deleteItem(btn.dataset.id));
+  });
+  list.querySelectorAll('img.thumb').forEach(img => {
+    img.addEventListener('click', () => openPhotoModal(img.dataset.id));
+  });
+}
+
+async function deleteItem(id) {
+  const items = await dbGetAll();
+  const item = items.find(i => i.item_id === id);
+  if (!item) return;
+  const ok = window.confirm(`Delete "${item.description}"? This permanently removes it from this device and cannot be undone.`);
+  if (!ok) return;
+  await dbDelete(id);
+  renderQueue();
 }
 
 async function markShelved(id) {
@@ -237,6 +267,80 @@ async function markShelved(id) {
   item.status = 'shelved';
   await dbPut(item);
   renderQueue();
+}
+
+async function unshelveItem(id) {
+  const items = await dbGetAll();
+  const item = items.find(i => i.item_id === id);
+  if (!item) return;
+  const ok = window.confirm(`Unshelve "${item.description}"? This marks it as no longer in its bin.`);
+  if (!ok) return;
+  item.status = 'labeled';
+  await dbPut(item);
+  renderQueue();
+}
+
+// --- photo modal + general (native) print ---------------------------------
+// Separate from the Zebra label flow below — this hands the photo off to
+// Android's own print system, so the person can save it as a PDF or send it
+// to any printer they have set up on the device (not just the ZD621).
+
+let currentModalItem = null;
+
+async function openPhotoModal(id) {
+  const items = await dbGetAll();
+  const item = items.find(i => i.item_id === id);
+  if (!item || !item.photo) return;
+  currentModalItem = item;
+  document.getElementById('photoModalImg').src = item.photo;
+  document.getElementById('photoModal').classList.add('active');
+}
+
+function closePhotoModal() {
+  document.getElementById('photoModal').classList.remove('active');
+  currentModalItem = null;
+}
+
+document.getElementById('photoModalCloseBtn').addEventListener('click', closePhotoModal);
+document.getElementById('photoModal').addEventListener('click', (e) => {
+  if (e.target.id === 'photoModal') closePhotoModal();
+});
+document.getElementById('photoModalPrintBtn').addEventListener('click', () => {
+  if (currentModalItem) printImage(currentModalItem.photo, currentModalItem.description);
+});
+
+function printImage(dataUrl, title) {
+  const safeTitle = String(title || 'Item photo').replace(/[<>]/g, '');
+  const iframe = document.createElement('iframe');
+  iframe.style.position = 'fixed';
+  iframe.style.right = '0';
+  iframe.style.bottom = '0';
+  iframe.style.width = '0';
+  iframe.style.height = '0';
+  iframe.style.border = '0';
+  document.body.appendChild(iframe);
+
+  const doc = iframe.contentWindow.document;
+  doc.open();
+  doc.write(`<!DOCTYPE html><html><head><title>${safeTitle}</title>
+    <style>
+      @page { margin: 0.25in; }
+      html, body { margin: 0; padding: 0; height: 100%; }
+      body { display: flex; align-items: center; justify-content: center; }
+      img { max-width: 100%; max-height: 100vh; }
+    </style>
+  </head><body><img id="printImg" src="${dataUrl}"></body></html>`);
+  doc.close();
+
+  const cleanup = () => { if (iframe.parentNode) iframe.parentNode.removeChild(iframe); };
+  const doPrint = () => {
+    iframe.contentWindow.focus();
+    iframe.contentWindow.print();
+    setTimeout(cleanup, 1000);
+  };
+  const img = doc.getElementById('printImg');
+  if (img.complete) doPrint();
+  else { img.onload = doPrint; img.onerror = cleanup; }
 }
 
 // --- ZPL label ---------------------------------------------------------
