@@ -309,8 +309,13 @@ document.getElementById('photoModalPrintBtn').addEventListener('click', () => {
   if (currentModalItem) printImage(currentModalItem.photo, currentModalItem.description);
 });
 
-function printImage(dataUrl, title) {
-  const safeTitle = String(title || 'Item photo').replace(/[<>]/g, '');
+// --- shared print helper ---------------------------------------------------
+// Hands any HTML off to the browser's own print system (Save as PDF, or any
+// printer already set up on the device) via a hidden iframe — no popup
+// blockers, no Bluetooth pairing required.
+
+function printHtmlDoc(bodyHtml, title, extraStyle) {
+  const safeTitle = String(title || 'Print').replace(/[<>]/g, '');
   const iframe = document.createElement('iframe');
   iframe.style.position = 'fixed';
   iframe.style.right = '0';
@@ -325,11 +330,11 @@ function printImage(dataUrl, title) {
   doc.write(`<!DOCTYPE html><html><head><title>${safeTitle}</title>
     <style>
       @page { margin: 0.25in; }
-      html, body { margin: 0; padding: 0; height: 100%; }
-      body { display: flex; align-items: center; justify-content: center; }
-      img { max-width: 100%; max-height: 100vh; }
+      html, body { margin: 0; padding: 0; }
+      * { box-sizing: border-box; }
+      ${extraStyle || ''}
     </style>
-  </head><body><img id="printImg" src="${dataUrl}"></body></html>`);
+  </head><body>${bodyHtml}</body></html>`);
   doc.close();
 
   const cleanup = () => { if (iframe.parentNode) iframe.parentNode.removeChild(iframe); };
@@ -338,140 +343,84 @@ function printImage(dataUrl, title) {
     iframe.contentWindow.print();
     setTimeout(cleanup, 1000);
   };
-  const img = doc.getElementById('printImg');
-  if (img.complete) doPrint();
-  else { img.onload = doPrint; img.onerror = cleanup; }
+
+  const imgs = Array.from(doc.images);
+  if (imgs.length === 0) { doPrint(); return; }
+  let remaining = imgs.length;
+  const onOneDone = () => { remaining--; if (remaining <= 0) doPrint(); };
+  imgs.forEach(img => {
+    if (img.complete) onOneDone();
+    else { img.onload = onOneDone; img.onerror = onOneDone; }
+  });
 }
 
-// --- ZPL label ---------------------------------------------------------
+function printImage(dataUrl, title) {
+  printHtmlDoc(
+    `<div style="display:flex;align-items:center;justify-content:center;height:100vh;">
+       <img src="${dataUrl}" style="max-width:100%;max-height:100vh;">
+     </div>`,
+    title
+  );
+}
 
-function buildZpl(item) {
-  const jobLine = item.capture_type === 'job' ? `Job: ${item.job_number}` : 'STOCK';
-  // Escape ^ and ~ which are ZPL control prefixes
-  const esc = (s) => String(s).replace(/\^/g, '').replace(/~/g, '');
-  return [
-    '^XA',
-    '^PW480',
-    '^FO40,30^BY2',
-    `^BCN,90,Y,N,N`,
-    `^FD${esc(item.label_code)}^FS`,
-    `^FO40,140^A0N,28,28^FD${esc(item.description).slice(0, 30)}^FS`,
-    `^FO40,175^A0N,24,24^FD${esc(jobLine)}^FS`,
-    `^FO40,205^A0N,24,24^FDBin: ${esc(item.destination_bin)}^FS`,
-    `^FO40,235^A0N,24,24^FDQty: ${esc(item.qty)}^FS`,
-    '^XZ'
+// --- label printing (via the browser's print dialog) -----------------------
+// The QR code encodes the item's full record as text (id, job/stock,
+// description, bin, qty) — see qrcode.js / qrcode-utf8.js (vendored,
+// MIT-licensed "qrcode-generator" by Kazuhiko Arase). Runs fully offline,
+// no server involved.
+
+function buildLabelQrDataUrl(item) {
+  const jobLine = item.capture_type === 'job' ? `Job ${item.job_number}` : 'Stock';
+  const payload = [
+    `ID:${item.label_code}`,
+    jobLine,
+    item.description,
+    `Bin:${item.destination_bin}`,
+    `Qty:${item.qty}`
   ].join('\n');
+  const qr = qrcode(0, 'M'); // type 0 = auto size, M = medium error correction
+  qr.addData(payload);
+  qr.make();
+  return qr.createDataURL(6, 4); // 6px per module, 4-module quiet margin
 }
 
-// --- Zebra ZD621 over Web Bluetooth (BLE) -------------------------------
-// Known Zebra BLE parser service/characteristic UUIDs used by Link-OS
-// printers. Verify against your exact ZD621 firmware on first pairing —
-// if the write fails, the debug log below will show what the printer
-// actually advertised so the UUIDs can be corrected.
-const ZEBRA_SERVICE_UUID = '38eb4a80-c570-11e3-9507-0002a5d5c51b';
-const ZEBRA_WRITE_CHAR_UUID = '38eb4a82-c570-11e3-9507-0002a5d5c51b';
-
-let printerDevice = null;
-let printerWriteChar = null;
-
-function log(msg) {
-  const el = document.getElementById('printerLog');
-  el.style.display = 'block';
-  el.textContent += msg + '\n';
-  el.scrollTop = el.scrollHeight;
-}
-
-function setPrinterStatus(connected) {
-  const el = document.getElementById('printerStatus');
-  el.textContent = connected ? 'Printer: connected' : 'Printer: not connected';
-  el.classList.toggle('connected', connected);
-}
-
-document.getElementById('connectPrinterBtn').addEventListener('click', connectPrinter);
-
-async function connectPrinter() {
-  if (!navigator.bluetooth) {
-    alert('Web Bluetooth is not available. Use Chrome on Android, and make sure the page is served over HTTPS.');
-    return;
-  }
-  try {
-    log('Requesting device (look for ZD621 in the Chrome picker)...');
-    printerDevice = await navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: 'ZD621' }, { namePrefix: 'Zebra' }],
-      optionalServices: [ZEBRA_SERVICE_UUID]
-    });
-    log(`Selected: ${printerDevice.name || '(unnamed)'}`);
-    printerDevice.addEventListener('gattserverdisconnected', () => {
-      setPrinterStatus(false);
-      printerWriteChar = null;
-      log('Disconnected.');
-    });
-
-    const server = await printerDevice.gatt.connect();
-
-    let service;
-    try {
-      service = await server.getPrimaryService(ZEBRA_SERVICE_UUID);
-    } catch (e) {
-      log('Known Zebra service UUID not found — listing all services for diagnosis:');
-      const services = await server.getPrimaryServices();
-      for (const s of services) {
-        log('Service: ' + s.uuid);
-        const chars = await s.getCharacteristics();
-        for (const c of chars) {
-          log('  Characteristic: ' + c.uuid + ' props=' + JSON.stringify(c.properties));
-        }
-      }
-      throw new Error('Could not find the expected print service. See log above for the real UUIDs on this printer, then update ZEBRA_SERVICE_UUID / ZEBRA_WRITE_CHAR_UUID in app.js.');
-    }
-
-    printerWriteChar = await service.getCharacteristic(ZEBRA_WRITE_CHAR_UUID);
-    setPrinterStatus(true);
-    log('Connected and ready to print.');
-  } catch (err) {
-    console.error(err);
-    log('Error: ' + err.message);
-    setPrinterStatus(false);
-  }
-}
-
-async function sendZpl(zpl) {
-  if (!printerWriteChar) {
-    await connectPrinter();
-    if (!printerWriteChar) return false;
-  }
-  const encoder = new TextEncoder();
-  const data = encoder.encode(zpl);
-  // BLE writes are chunked; most GATT characteristics cap ~20-244 bytes per write.
-  const CHUNK = 100;
-  try {
-    for (let i = 0; i < data.length; i += CHUNK) {
-      const chunk = data.slice(i, i + CHUNK);
-      if (printerWriteChar.properties.writeWithoutResponse) {
-        await printerWriteChar.writeValueWithoutResponse(chunk);
-      } else {
-        await printerWriteChar.writeValue(chunk);
-      }
-    }
-    return true;
-  } catch (err) {
-    log('Print error: ' + err.message);
-    return false;
-  }
+function printLabel(item) {
+  const esc = (s) => String(s).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const jobLine = item.capture_type === 'job' ? `Job ${item.job_number}` : 'Stock';
+  const qrDataUrl = buildLabelQrDataUrl(item);
+  const body = `
+    <div class="label">
+      <img class="qr" src="${qrDataUrl}">
+      <div class="fields">
+        <div class="desc">${esc(item.description)}</div>
+        <div class="row">${esc(jobLine)}</div>
+        <div class="row">Bin: ${esc(item.destination_bin)}</div>
+        <div class="row">Qty: ${esc(item.qty)}</div>
+        <div class="code">${esc(item.label_code)}</div>
+      </div>
+    </div>`;
+  const style = `
+    @page { size: 4in 2in; margin: 0.1in; }
+    body { font-family: Arial, Helvetica, sans-serif; display:flex; align-items:center; justify-content:center; min-height:100vh; }
+    .label { display:flex; gap:0.15in; align-items:center; width:3.8in; }
+    .qr { width:1.6in; height:1.6in; flex-shrink:0; image-rendering:pixelated; }
+    .fields { flex:1; display:flex; flex-direction:column; justify-content:center; gap:3px; min-width:0; }
+    .desc { font-size:14pt; font-weight:bold; line-height:1.15; word-break:break-word; }
+    .row { font-size:11pt; }
+    .code { font-size:9pt; color:#555; margin-top:4px; letter-spacing:1px; }
+  `;
+  printHtmlDoc(body, item.description, style);
 }
 
 async function printItem(id) {
   const items = await dbGetAll();
   const item = items.find(i => i.item_id === id);
   if (!item) return;
-  const zpl = buildZpl(item);
-  const ok = await sendZpl(zpl);
-  if (ok) {
-    item.label_printed = true;
-    if (item.status === 'pending') item.status = 'labeled';
-    await dbPut(item);
-    renderQueue();
-  }
+  printLabel(item);
+  item.label_printed = true;
+  if (item.status === 'pending') item.status = 'labeled';
+  await dbPut(item);
+  renderQueue();
 }
 
 // --- export --------------------------------------------------------------

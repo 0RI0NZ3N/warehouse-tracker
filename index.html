@@ -31,8 +31,6 @@
     padding: 14px 16px; display: flex; justify-content: space-between; align-items: center;
   }
   header h1 { font-size: 17px; margin: 0; }
-  #printerStatus { font-size: 12px; padding: 4px 8px; border-radius: 12px; background: var(--panel2); color: var(--muted); }
-  #printerStatus.connected { color: var(--ok); }
   main { padding: 14px; max-width: 640px; margin: 0 auto; }
   .card {
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
@@ -109,7 +107,6 @@
 
 <header>
   <h1>Move Tracker</h1>
-  <span id="printerStatus">Printer: not connected</span>
 </header>
 
 <main>
@@ -158,11 +155,7 @@
   <!-- QUEUE VIEW -->
   <section id="view-queue" class="view">
     <div class="card">
-      <div class="row">
-        <button class="btn btn-secondary" id="connectPrinterBtn">Connect printer</button>
-        <button class="btn btn-secondary" id="exportBtn">Export data</button>
-      </div>
-      <div id="printerLog" class="log" style="margin-top:10px; display:none;"></div>
+      <button class="btn btn-secondary" id="exportBtn">Export data</button>
     </div>
     <ul class="item-list" id="itemList"></ul>
     <div class="empty" id="emptyMsg">No items captured yet.</div>
@@ -183,6 +176,8 @@
   <button id="tabQueue">Queue / Print</button>
 </nav>
 
+<script src="qrcode.js"></script>
+<script src="qrcode-utf8.js"></script>
 <script src="app.js"></script>
 <script>
   if ('serviceWorker' in navigator) {

@@ -1,14 +1,14 @@
 # Warehouse Move Tracker
 
-Local-first PWA: photo an item, tag it Job or Stock, assign a bin, save, print a
-Zebra label over Bluetooth. Runs entirely on the phone — no server, no backend.
-Data lives in the browser's IndexedDB on that one phone until you export it.
+Local-first PWA: photo an item, tag it Job or Stock, assign a bin, save, print
+a QR label. Runs entirely on the phone/tablet — no server, no backend. Data
+lives in the browser's IndexedDB on that one device until you export it.
 
 Data shape mirrors the Master System object model (`PART` / `INVENTORY-BIN` /
 `JOB`) so this becomes a straight import later instead of a re-key.
 
-## 1. Deploy it (needs HTTPS — Web Bluetooth and camera both require a secure
-   origin; `file://` will not work)
+## 1. Deploy it (needs HTTPS — camera access requires a secure origin;
+   `file://` will not work)
 
 Easiest free option — GitHub Pages:
 
@@ -25,61 +25,56 @@ Then the app is live at `https://<your-username>.github.io/warehouse-tracker/`.
 (Any static HTTPS host works the same way — Netlify, Vercel, your own domain
 once you've bought it for the Master System.)
 
-## 2. Install on the S10 FE
+## 2. Install on a phone/tablet
 
-1. Open the deployed URL in **Chrome** on the phone (must be Chrome — Web
-   Bluetooth doesn't work in Samsung Internet or Firefox for Android).
+1. Open the deployed URL in **Chrome**.
 2. Chrome menu → **Add to Home screen**. It now opens full-screen like a
    normal app, works offline for the form itself (photos/records stay local).
 
-## 3. First-time printer pairing
+## 3. Printing labels
 
-1. Turn the ZD621's Bluetooth on and put it in discoverable/pairing mode
-   (menu on the printer's LCD, or via Zebra Setup Utility once over USB).
-2. In the app, go to **Queue / Print** → **Connect printer**. Chrome will show
-   a device picker — select the ZD621.
-3. Watch the debug log box that appears under the buttons.
-   - If it says **"Connected and ready to print"** — done, pairing is
-     remembered by Chrome for next time on this phone.
-   - If it says **"Could not find the expected print service"** — it will
-     have printed every service/characteristic UUID the printer actually
-     advertises. Send me that log and I'll swap the two UUID constants at
-     the top of `app.js` (`ZEBRA_SERVICE_UUID`, `ZEBRA_WRITE_CHAR_UUID`) to
-     match your printer's firmware — this varies slightly by ZD621 firmware
-     version and can't be guaranteed without testing against the real unit.
+Tap **Print label** on any item — this opens the device's own print dialog
+(the same one Chrome uses for any web page), so you can **Save as PDF** or
+send it to **any printer already set up on the device**. No Bluetooth
+pairing, no printer-specific setup.
+
+The label shows a QR code plus the same fields in plain text: description,
+job/stock, bin, qty, and the short item code. The QR encodes the item's full
+record as text, so any scanner can read it instantly, offline, anywhere —
+generated locally by a vendored copy of `qrcode-generator` (MIT-licensed,
+`qrcode.js` / `qrcode-utf8.js`), no external service involved.
+
+Tapping a photo thumbnail works the same way — it opens the photo full-size
+with its own **Print / Save as PDF** button.
 
 ## 4. Day-to-day use
 
 - **+ New Item**: photo → who's capturing → Job (with job #) or Stock →
   description, qty, destination bin → Save. Every saved item is written
-  straight into that phone's on-device storage (IndexedDB) — nothing leaves
-  the phone unless you export it.
-- **Queue / Print**: every saved item, oldest first. Tap **Print label** to
-  send it to the ZD621 (reconnects automatically if Bluetooth dropped). Tap
-  **Mark shelved** once it's physically placed in its bin — the button then
-  becomes **✓ Shelved — tap to unshelve**, and tapping it again asks you to
-  confirm before reverting it. Tap **Delete** to permanently remove an item
-  from this device — also asks for confirmation first, and can't be undone.
-- **Tap a photo thumbnail** to open it full-size, with a **Print / Save as
-  PDF** button — this hands off to the phone's own Android print system
-  (same as printing from Chrome or Gmail), so it can be saved as a PDF or
-  sent to any printer already set up on the phone. This is separate from the
-  ZD621 label printing above.
+  straight into that device's on-device storage (IndexedDB) — nothing leaves
+  the device unless you export it.
+- **Queue / Print**: every saved item, oldest first. Tap **Print label** (see
+  above). Tap **Mark shelved** once it's physically placed in its bin — the
+  button then becomes **✓ Shelved — tap to unshelve**, and tapping it again
+  asks you to confirm before reverting it. Tap **Delete** to permanently
+  remove an item from this device — also asks for confirmation first, and
+  can't be undone.
 - **Export data**: downloads a JSON file of every record (including photos as
   embedded base64) — this is what will get imported into the Master System
   once that module exists. Do this at the end of each shift as a backup,
-  since everything otherwise lives only in that phone's browser storage.
+  since everything otherwise lives only in that device's browser storage.
 
 ## Editing the team list
 
 Tap the "Captured by" dropdown → **Edit team names...** — comma-separated
-names, stored on the phone, never hardcoded in the app.
+names, stored on the device, never hardcoded in the app.
 
 ## Known constraints
 
-- One phone, one printer, shared — only one person can be actively printing
-  at a time; capturing (photo + form) works independently and queues fine.
-- Clearing Chrome's site data on the phone wipes all unsynced records —
+- Printing goes through the device's system print dialog every time — there's
+  no silent/automatic printing, so each label needs a tap to confirm in that
+  dialog.
+- Clearing Chrome's site data on the device wipes all unsynced records —
   export before doing that.
-- iOS phones can't run this (no Web Bluetooth in Safari) — Android + Chrome
-  only, which matches the S10 FE.
+- Camera capture needs Chrome (or another browser with camera permission
+  support) — Safari on iOS is untested.
