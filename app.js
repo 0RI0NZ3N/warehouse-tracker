@@ -405,49 +405,10 @@ function printImage(dataUrl, title) {
 }
 
 // --- label printing (via the browser's print dialog) -----------------------
-// The QR code encodes a link to view.html (bundled alongside this app),
-// not raw text — a phone's camera app only offers to *do* something with a
-// QR code when it recognizes a URL; plain multi-line text just gets shown
-// (or, on some scanners, rejected as "no usable data"). The item's full
-// record travels in the URL's hash fragment as base64 JSON, which browsers
-// never send to a server — view.html reads it and renders it entirely
-// client-side, so nothing about the item leaves the phone that scans it.
-// See qrcode.js / qrcode-utf8.js (vendored, MIT-licensed "qrcode-generator"
-// by Kazuhiko Arase). Runs fully offline, no server involved.
-
-// Encodes a JS value as base64 in a way that survives non-ASCII text
-// (descriptions, names, etc.) — plain btoa() throws on those.
-function toBase64Utf8(str) {
-  return btoa(unescape(encodeURIComponent(str)));
-}
-
-function buildLabelQrSvg(item, boxIndex, boxCount) {
-  const record = {
-    id: item.label_code,
-    type: item.capture_type,
-    job: item.capture_type === 'job' ? item.job_number : null,
-    group: item.group || null,
-    description: item.description,
-    bin: item.destination_bin,
-    qty: item.qty,
-    box: (boxCount && boxCount > 1) ? `${boxIndex} of ${boxCount}` : null,
-    captured_by: item.captured_by,
-    captured_at: item.captured_at,
-    status: item.status
-  };
-  const encoded = encodeURIComponent(toBase64Utf8(JSON.stringify(record)));
-  // Resolved against the current page, so this works whether the app is
-  // served from a domain root or a GitHub Pages project subpath.
-  const url = new URL('view.html', location.href).href + '#' + encoded;
-
-  const qr = qrcode(0, 'M'); // type 0 = auto size, M = medium error correction
-  qr.addData(url);
-  qr.make();
-  // margin is in the same units as cellSize (not "module count"), so this
-  // gives a proper ~4-module quiet zone around the code — too thin a
-  // border is another common cause of scan failures.
-  return qr.createSvgTag({ cellSize: 8, margin: 32, scalable: true });
-}
+// Plain text only — no QR code. Scanning it repeatedly failed across
+// different fixes (raw text, then a linked info page), so it's been
+// dropped rather than keep guessing; the printed text below is the whole
+// label.
 
 // Prints one label per box (box_count on the item) in a single print job, each
 // stamped "Box X of Y" — so a multi-box item never needs duplicate entries.
@@ -458,19 +419,15 @@ function printLabel(item) {
 
   let labelsHtml = '';
   for (let i = 1; i <= boxCount; i++) {
-    const qrSvg = buildLabelQrSvg(item, i, boxCount);
     labelsHtml += `
       <div class="label-page">
         <div class="label">
-          <div class="qr">${qrSvg}</div>
-          <div class="fields">
-            <div class="desc">${esc(item.description)}</div>
-            <div class="row">${esc(jobLine)}${item.group ? ' · ' + esc(item.group) : ''}</div>
-            <div class="row">Bin: ${esc(item.destination_bin)}</div>
-            <div class="row">Qty: ${esc(item.qty)}</div>
-            ${boxCount > 1 ? `<div class="row box-line">Box ${i} of ${boxCount}</div>` : ''}
-            <div class="code">${esc(item.label_code)}</div>
-          </div>
+          <div class="desc">${esc(item.description)}</div>
+          <div class="row">${esc(jobLine)}${item.group ? ' · ' + esc(item.group) : ''}</div>
+          <div class="row">Bin: ${esc(item.destination_bin)}</div>
+          <div class="row">Qty: ${esc(item.qty)}</div>
+          ${boxCount > 1 ? `<div class="row box-line">Box ${i} of ${boxCount}</div>` : ''}
+          <div class="code">${esc(item.label_code)}</div>
         </div>
       </div>`;
   }
@@ -485,15 +442,12 @@ function printLabel(item) {
     .label-page:last-child { page-break-after: auto; }
     .label {
       display:flex; flex-direction:column; align-items:center; text-align:center;
-      width:3.6in; gap:0.18in;
+      width:3.6in; gap:0.22in;
     }
-    .qr { width:2.9in; height:2.9in; }
-    .qr svg { width:100%; height:100%; display:block; }
-    .fields { display:flex; flex-direction:column; align-items:center; gap:6px; width:100%; }
-    .desc { font-size:20pt; font-weight:bold; line-height:1.2; word-break:break-word; }
-    .row { font-size:15pt; }
-    .box-line { font-weight:bold; font-size:16pt; }
-    .code { font-size:12pt; color:#555; margin-top:6px; letter-spacing:1.5px; }
+    .desc { font-size:34pt; font-weight:bold; line-height:1.2; word-break:break-word; }
+    .row { font-size:22pt; }
+    .box-line { font-weight:bold; font-size:24pt; }
+    .code { font-size:16pt; color:#555; margin-top:10px; letter-spacing:2px; }
   `;
   printHtmlDoc(labelsHtml, item.description, style);
 }
