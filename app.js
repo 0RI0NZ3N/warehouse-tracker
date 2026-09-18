@@ -405,32 +405,48 @@ function printImage(dataUrl, title) {
 }
 
 // --- label printing (via the browser's print dialog) -----------------------
-// The QR code encodes the item's full record as text (id, job/stock,
-// description, bin, qty) — see qrcode.js / qrcode-utf8.js (vendored,
-// MIT-licensed "qrcode-generator" by Kazuhiko Arase). Runs fully offline,
-// no server involved.
+// The QR code encodes a link to view.html (bundled alongside this app),
+// not raw text — a phone's camera app only offers to *do* something with a
+// QR code when it recognizes a URL; plain multi-line text just gets shown
+// (or, on some scanners, rejected as "no usable data"). The item's full
+// record travels in the URL's hash fragment as base64 JSON, which browsers
+// never send to a server — view.html reads it and renders it entirely
+// client-side, so nothing about the item leaves the phone that scans it.
+// See qrcode.js / qrcode-utf8.js (vendored, MIT-licensed "qrcode-generator"
+// by Kazuhiko Arase). Runs fully offline, no server involved.
 
-// Returns inline SVG markup (not a raster <img>) for the QR code. This
-// matters for print: browsers' print/PDF pipelines routinely ignore
-// `image-rendering: pixelated` and smooth a small raster QR image when
-// it's scaled up, blurring the modules together until scanners fail with
-// "no usable data." An SVG stays crisp at any print size since there's no
-// bitmap to smooth.
+// Encodes a JS value as base64 in a way that survives non-ASCII text
+// (descriptions, names, etc.) — plain btoa() throws on those.
+function toBase64Utf8(str) {
+  return btoa(unescape(encodeURIComponent(str)));
+}
+
 function buildLabelQrSvg(item, boxIndex, boxCount) {
-  const jobLine = item.capture_type === 'job' ? `Job ${item.job_number}` : 'Stock';
-  const payload = [
-    `ID:${item.label_code}`,
-    jobLine,
-    item.group ? `Group:${item.group}` : null,
-    item.description,
-    `Bin:${item.destination_bin}`,
-    `Qty:${item.qty}`,
-    (boxCount && boxCount > 1) ? `Box:${boxIndex} of ${boxCount}` : null
-  ].filter(Boolean).join('\n');
+  const record = {
+    id: item.label_code,
+    type: item.capture_type,
+    job: item.capture_type === 'job' ? item.job_number : null,
+    group: item.group || null,
+    description: item.description,
+    bin: item.destination_bin,
+    qty: item.qty,
+    box: (boxCount && boxCount > 1) ? `${boxIndex} of ${boxCount}` : null,
+    captured_by: item.captured_by,
+    captured_at: item.captured_at,
+    status: item.status
+  };
+  const encoded = encodeURIComponent(toBase64Utf8(JSON.stringify(record)));
+  // Resolved against the current page, so this works whether the app is
+  // served from a domain root or a GitHub Pages project subpath.
+  const url = new URL('view.html', location.href).href + '#' + encoded;
+
   const qr = qrcode(0, 'M'); // type 0 = auto size, M = medium error correction
-  qr.addData(payload);
+  qr.addData(url);
   qr.make();
-  return qr.createSvgTag({ cellSize: 8, margin: 8, scalable: true });
+  // margin is in the same units as cellSize (not "module count"), so this
+  // gives a proper ~4-module quiet zone around the code — too thin a
+  // border is another common cause of scan failures.
+  return qr.createSvgTag({ cellSize: 8, margin: 32, scalable: true });
 }
 
 // Prints one label per box (box_count on the item) in a single print job, each

@@ -1,5 +1,5 @@
-const CACHE = 'app-cache-v11';
-const ASSETS = ['./', './index.html', './app.js', './manifest.json', './qrcode.js', './qrcode-utf8.js'];
+const CACHE = 'app-cache-v12';
+const ASSETS = ['./', './index.html', './app.js', './view.html', './manifest.json', './qrcode.js', './qrcode-utf8.js'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)));
