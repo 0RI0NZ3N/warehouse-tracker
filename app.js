@@ -1,8 +1,5 @@
 // ---------------------------------------------------------------------------
-// Warehouse Move Tracker
-// Local-first PWA: photo capture -> item record -> ZPL label -> Zebra ZD621
-// over Web Bluetooth (BLE). Data shape is designed to map 1:1 onto the
-// PART / INVENTORY-BIN / JOB tables of the Master System object model later.
+// Local-first PWA. Data lives only in this device's browser storage.
 // ---------------------------------------------------------------------------
 
 const DB_NAME = 'warehouse-tracker';
@@ -142,6 +139,8 @@ document.getElementById('photoInput').addEventListener('change', async (e) => {
   const img = document.getElementById('photoPreview');
   img.src = currentPhotoDataUrl;
   img.style.display = 'block';
+  document.getElementById('fileDropLabel').classList.add('has-photo');
+  document.getElementById('fileDropText').textContent = `✓ ${file.name || 'Photo added'} — tap to replace`;
 });
 
 document.getElementById('saveItemBtn').addEventListener('click', async () => {
@@ -150,6 +149,8 @@ document.getElementById('saveItemBtn').addEventListener('click', async () => {
   const description = document.getElementById('description').value.trim();
   const qty = parseFloat(document.getElementById('qty').value) || 0;
   const destBin = document.getElementById('destBin').value.trim();
+  const itemGroup = document.getElementById('itemGroup').value.trim();
+  const boxCount = Math.max(1, parseInt(document.getElementById('boxCount').value, 10) || 1);
 
   if (!employee) { alert('Select who is capturing this item.'); return; }
   if (currentType === 'job' && !jobNumber) { alert('Enter a job number, or switch to Stock.'); return; }
@@ -165,6 +166,8 @@ document.getElementById('saveItemBtn').addEventListener('click', async () => {
     description,
     qty,
     destination_bin: destBin,
+    group: itemGroup || null,
+    box_count: boxCount,
     captured_by: employee,
     captured_at: new Date().toISOString(),
     label_printed: false,
@@ -174,6 +177,7 @@ document.getElementById('saveItemBtn').addEventListener('click', async () => {
   await dbPut(item);
   resetForm();
   renderQueue();
+  refreshAutocomplete();
   switchTab('queue');
 });
 
@@ -182,11 +186,46 @@ function resetForm() {
   document.getElementById('photoPreview').style.display = 'none';
   document.getElementById('photoPreview').src = '';
   document.getElementById('photoInput').value = '';
+  document.getElementById('fileDropLabel').classList.remove('has-photo');
+  document.getElementById('fileDropText').textContent = 'Tap to take or choose a photo';
   document.getElementById('jobNumber').value = '';
   document.getElementById('description').value = '';
   document.getElementById('qty').value = '1';
   document.getElementById('destBin').value = '';
+  document.getElementById('itemGroup').value = '';
+  document.getElementById('boxCount').value = '1';
   setType('job');
+}
+
+// --- autocomplete (datalists populated from previously entered values) -----
+
+// Sub-group presets that always show up as suggestions, even before any
+// item has used them yet. Any other value the person types is picked up
+// from prior entries and offered too.
+const GROUP_PRESETS = ['Group 1', 'ENT', 'CAB', 'G2'];
+
+async function refreshAutocomplete() {
+  const items = await dbGetAll();
+  const jobNumbers = new Set();
+  const descriptions = new Set();
+  const bins = new Set();
+  const groups = new Set(GROUP_PRESETS);
+  for (const item of items) {
+    if (item.job_number) jobNumbers.add(item.job_number);
+    if (item.description) descriptions.add(item.description);
+    if (item.destination_bin) bins.add(item.destination_bin);
+    if (item.group) groups.add(item.group);
+  }
+  const fill = (id, set, sorted = true) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const values = sorted ? Array.from(set).sort() : Array.from(set);
+    el.innerHTML = values.map(v => `<option value="${String(v).replace(/"/g, '&quot;')}">`).join('');
+  };
+  fill('jobNumberOptions', jobNumbers);
+  fill('descriptionOptions', descriptions);
+  fill('destBinOptions', bins);
+  fill('itemGroupOptions', groups, false);
 }
 
 // --- tabs ----------------------------------------------------------------
@@ -218,7 +257,7 @@ async function renderQueue() {
       <img class="thumb" data-id="${item.item_id}" src="${item.photo || ''}">
       <div class="item-meta">
         <div class="title">${item.description}</div>
-        <div class="sub">${item.capture_type === 'job' ? 'Job ' + item.job_number : 'Stock'} · Qty ${item.qty} · Bin ${item.destination_bin}</div>
+        <div class="sub">${item.capture_type === 'job' ? 'Job ' + item.job_number : 'Stock'}${item.group ? ' · ' + item.group : ''} · Qty ${item.qty} · Bin ${item.destination_bin}</div>
         <div class="sub">${item.captured_by} · ${new Date(item.captured_at).toLocaleString()}</div>
         <span class="status-pill ${item.status}">${item.status}</span>
       </div>
@@ -369,47 +408,63 @@ function printImage(dataUrl, title) {
 // MIT-licensed "qrcode-generator" by Kazuhiko Arase). Runs fully offline,
 // no server involved.
 
-function buildLabelQrDataUrl(item) {
+function buildLabelQrDataUrl(item, boxIndex, boxCount) {
   const jobLine = item.capture_type === 'job' ? `Job ${item.job_number}` : 'Stock';
   const payload = [
     `ID:${item.label_code}`,
     jobLine,
+    item.group ? `Group:${item.group}` : null,
     item.description,
     `Bin:${item.destination_bin}`,
-    `Qty:${item.qty}`
-  ].join('\n');
+    `Qty:${item.qty}`,
+    (boxCount && boxCount > 1) ? `Box:${boxIndex} of ${boxCount}` : null
+  ].filter(Boolean).join('\n');
   const qr = qrcode(0, 'M'); // type 0 = auto size, M = medium error correction
   qr.addData(payload);
   qr.make();
   return qr.createDataURL(6, 4); // 6px per module, 4-module quiet margin
 }
 
+// Prints one label per box (box_count on the item) in a single print job, each
+// stamped "Box X of Y" — so a multi-box item never needs duplicate entries.
 function printLabel(item) {
   const esc = (s) => String(s).replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const jobLine = item.capture_type === 'job' ? `Job ${item.job_number}` : 'Stock';
-  const qrDataUrl = buildLabelQrDataUrl(item);
-  const body = `
-    <div class="label">
-      <img class="qr" src="${qrDataUrl}">
-      <div class="fields">
-        <div class="desc">${esc(item.description)}</div>
-        <div class="row">${esc(jobLine)}</div>
-        <div class="row">Bin: ${esc(item.destination_bin)}</div>
-        <div class="row">Qty: ${esc(item.qty)}</div>
-        <div class="code">${esc(item.label_code)}</div>
-      </div>
-    </div>`;
+  const boxCount = Math.max(1, parseInt(item.box_count, 10) || 1);
+
+  let labelsHtml = '';
+  for (let i = 1; i <= boxCount; i++) {
+    const qrDataUrl = buildLabelQrDataUrl(item, i, boxCount);
+    labelsHtml += `
+      <div class="label-page">
+        <div class="label">
+          <img class="qr" src="${qrDataUrl}">
+          <div class="fields">
+            <div class="desc">${esc(item.description)}</div>
+            <div class="row">${esc(jobLine)}${item.group ? ' · ' + esc(item.group) : ''}</div>
+            <div class="row">Bin: ${esc(item.destination_bin)}</div>
+            <div class="row">Qty: ${esc(item.qty)}</div>
+            ${boxCount > 1 ? `<div class="row box-line">Box ${i} of ${boxCount}</div>` : ''}
+            <div class="code">${esc(item.label_code)}</div>
+          </div>
+        </div>
+      </div>`;
+  }
+
   const style = `
     @page { size: 4in 2in; margin: 0.1in; }
-    body { font-family: Arial, Helvetica, sans-serif; display:flex; align-items:center; justify-content:center; min-height:100vh; }
+    body { font-family: Arial, Helvetica, sans-serif; }
+    .label-page { display:flex; align-items:center; justify-content:center; width:100%; min-height:1.8in; page-break-after: always; }
+    .label-page:last-child { page-break-after: auto; }
     .label { display:flex; gap:0.15in; align-items:center; width:3.8in; }
     .qr { width:1.6in; height:1.6in; flex-shrink:0; image-rendering:pixelated; }
     .fields { flex:1; display:flex; flex-direction:column; justify-content:center; gap:3px; min-width:0; }
     .desc { font-size:14pt; font-weight:bold; line-height:1.15; word-break:break-word; }
     .row { font-size:11pt; }
+    .box-line { font-weight:bold; }
     .code { font-size:9pt; color:#555; margin-top:4px; letter-spacing:1px; }
   `;
-  printHtmlDoc(body, item.description, style);
+  printHtmlDoc(labelsHtml, item.description, style);
 }
 
 async function printItem(id) {
@@ -424,6 +479,137 @@ async function printItem(id) {
 }
 
 // --- export --------------------------------------------------------------
+// Clean printable list, grouped into Jobs (sub-grouped by job number, then
+// further sub-grouped by the optional Group field — Group 1, ENT, CAB, G2,
+// etc.) and Stock. Goes through the same browser print dialog as
+// labels/photos, so "Save as PDF" produces a real PDF with no extra
+// library needed.
+
+// Splits a list of items into [groupLabel, items[]] buckets ordered by
+// GROUP_PRESETS first, then any other custom group alphabetically, then
+// items with no group set last. Returns a single [null, items] bucket
+// (i.e. "don't sub-group") when nothing in the list has a group set.
+function subGroupByGroupField(items) {
+  const buckets = {};
+  for (const item of items) {
+    const key = item.group || '';
+    (buckets[key] = buckets[key] || []).push(item);
+  }
+  const keys = Object.keys(buckets);
+  if (!keys.some(k => k !== '')) return [[null, items]];
+  keys.sort((a, b) => {
+    if (a === '') return 1;
+    if (b === '') return -1;
+    const ia = GROUP_PRESETS.indexOf(a);
+    const ib = GROUP_PRESETS.indexOf(b);
+    if (ia === -1 && ib === -1) return a.localeCompare(b);
+    if (ia === -1) return 1;
+    if (ib === -1) return -1;
+    return ia - ib;
+  });
+  return keys.map(k => [k === '' ? 'Ungrouped' : k, buckets[k]]);
+}
+
+document.getElementById('exportPdfBtn').addEventListener('click', async () => {
+  const items = await dbGetAll();
+  const esc = (s) => String(s == null ? '' : s).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  const jobs = {};
+  const stock = [];
+  for (const item of items) {
+    if (item.capture_type === 'job') {
+      const key = item.job_number || 'Unspecified';
+      (jobs[key] = jobs[key] || []).push(item);
+    } else {
+      stock.push(item);
+    }
+  }
+
+  // Fixed column widths shared by every table in the document (via colgroup)
+  // so columns line up consistently from one job/group table to the next,
+  // regardless of how long any individual cell's content is.
+  const colgroup = `<colgroup>
+    <col style="width:25%"><col style="width:6%"><col style="width:9%">
+    <col style="width:12%"><col style="width:11%"><col style="width:22%"><col style="width:15%">
+  </colgroup>`;
+  const tableHead = `<tr><th>Description</th><th class="num">Qty</th><th class="num">Boxes</th><th>Bin</th><th>By</th><th>Captured</th><th>Status</th></tr>`;
+  const fmtDate = (iso) => {
+    const d = new Date(iso);
+    const datePart = d.toLocaleDateString(undefined, { month: '2-digit', day: '2-digit', year: 'numeric' });
+    const timePart = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+    return `${datePart} ${timePart}`;
+  };
+  const rowHtml = (item) => `
+    <tr>
+      <td>${esc(item.description)}</td>
+      <td class="num">${esc(item.qty)}</td>
+      <td class="num">${esc(item.box_count || 1)}</td>
+      <td>${esc(item.destination_bin)}</td>
+      <td>${esc(item.captured_by)}</td>
+      <td>${fmtDate(item.captured_at)}</td>
+      <td>${esc(item.status)}</td>
+    </tr>`;
+  const tableHtml = (rows) => `<table>${colgroup}<thead>${tableHead}</thead><tbody>${rows.map(rowHtml).join('')}</tbody></table>`;
+  // Sub-group headers (h4) are wrapped + indented in their own block so they
+  // read as nested *under* the bold job banner (h3) above them, not as a
+  // second job of equal weight.
+  const groupedHtml = (rows) => {
+    const groups = subGroupByGroupField(rows);
+    if (groups.length === 1 && groups[0][0] === null) return tableHtml(rows);
+    return groups.map(([label, groupItems]) =>
+      `<div class="group-block"><h4>${esc(label)}</h4>${tableHtml(groupItems)}</div>`
+    ).join('');
+  };
+
+  let body = `<h1>Export</h1>
+    <div class="meta">Generated ${new Date().toLocaleString()} · ${items.length} item(s)</div>`;
+
+  const jobKeys = Object.keys(jobs).sort();
+  if (jobKeys.length) {
+    body += `<h2>Jobs</h2>`;
+    for (const key of jobKeys) {
+      body += `<h3>Job ${esc(key)}</h3>${groupedHtml(jobs[key])}`;
+    }
+  }
+  if (stock.length) {
+    body += `<h2>Stock</h2>${groupedHtml(stock)}`;
+  }
+  if (!jobKeys.length && !stock.length) {
+    body += `<p>No items captured yet.</p>`;
+  }
+
+  const style = `
+    body { font-family: Arial, Helvetica, sans-serif; color:#111; font-size:11pt; }
+    h1 { font-size:16pt; margin-bottom:2px; }
+    .meta { font-size:9pt; color:#555; margin-bottom:14px; }
+    h2 { font-size:13pt; margin-top:22px; border-bottom:2px solid #333; padding-bottom:2px; }
+    /* Job = bold banded header, full width, dark left bar — the primary heading */
+    h3 {
+      font-size:12.5pt; font-weight:800; margin-top:18px; margin-bottom:8px;
+      color:#111; background:#eeeeee; border-left:5px solid #111;
+      padding:6px 10px; border-radius:2px; page-break-after: avoid;
+    }
+    /* Sub-group = smaller, medium weight, amber accent, indented — clearly
+       nested one level below the job header, not competing with it */
+    .group-block { margin-left:16px; margin-bottom:6px; }
+    h4 {
+      font-size:9.5pt; font-weight:700; margin-top:10px; margin-bottom:4px;
+      color:#95690a; text-transform:uppercase; letter-spacing:0.5px;
+      border-left:3px solid #d4a017; padding-left:8px; page-break-after: avoid;
+    }
+    .group-block table { width:calc(100% - 0px); }
+    table { width:100%; table-layout:fixed; border-collapse:collapse; margin-bottom:10px; }
+    th, td {
+      border:1px solid #999; padding:4px 6px; text-align:left; font-size:9.5pt;
+      overflow-wrap:break-word; word-break:break-word;
+    }
+    th { background:#eee; font-size:8.5pt; text-transform:uppercase; letter-spacing:0.2px; white-space:nowrap; }
+    th.num, td.num { text-align:right; }
+    tbody tr:nth-child(even) { background:#f7f7f7; }
+    tr { page-break-inside: avoid; }
+  `;
+  printHtmlDoc(body, `export-${new Date().toISOString().slice(0, 10)}`, style);
+});
 
 document.getElementById('exportBtn').addEventListener('click', async () => {
   const items = await dbGetAll();
@@ -431,7 +617,7 @@ document.getElementById('exportBtn').addEventListener('click', async () => {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `warehouse-move-export-${new Date().toISOString().slice(0, 10)}.json`;
+  a.download = `export-${new Date().toISOString().slice(0, 10)}.json`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -443,4 +629,5 @@ document.getElementById('exportBtn').addEventListener('click', async () => {
 (async function init() {
   db = await openDb();
   renderQueue();
+  refreshAutocomplete();
 })();
