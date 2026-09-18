@@ -1,4 +1,4 @@
-const CACHE = 'app-cache-v8';
+const CACHE = 'app-cache-v10';
 const ASSETS = ['./', './index.html', './app.js', './manifest.json', './qrcode.js', './qrcode-utf8.js'];
 
 self.addEventListener('install', (e) => {

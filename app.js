@@ -350,23 +350,27 @@ document.getElementById('photoModalPrintBtn').addEventListener('click', () => {
 
 // --- shared print helper ---------------------------------------------------
 // Hands any HTML off to the browser's own print system (Save as PDF, or any
-// printer already set up on the device) via a hidden iframe — no popup
-// blockers, no Bluetooth pairing required.
+// printer already set up on the device) by opening it in its own popup
+// window and calling print() there.
+//
+// This used to use a hidden, zero-size iframe instead. On Android Chrome
+// that's unreliable: print() called on an off-screen/zero-size iframe can
+// silently print the visible page behind it instead of the iframe's own
+// content (e.g. tapping "Print label" would print whatever app screen was
+// showing, not the label). A real popup window is its own top-level
+// browsing context, so there's nothing else for the browser to print by
+// mistake.
 
 function printHtmlDoc(bodyHtml, title, extraStyle) {
   const safeTitle = String(title || 'Print').replace(/[<>]/g, '');
-  const iframe = document.createElement('iframe');
-  iframe.style.position = 'fixed';
-  iframe.style.right = '0';
-  iframe.style.bottom = '0';
-  iframe.style.width = '0';
-  iframe.style.height = '0';
-  iframe.style.border = '0';
-  document.body.appendChild(iframe);
+  const printWindow = window.open('', '_blank');
+  if (!printWindow) {
+    alert('Pop-ups are blocked for this site — allow pop-ups to print, then try again.');
+    return;
+  }
 
-  const doc = iframe.contentWindow.document;
-  doc.open();
-  doc.write(`<!DOCTYPE html><html><head><title>${safeTitle}</title>
+  printWindow.document.open();
+  printWindow.document.write(`<!DOCTYPE html><html><head><title>${safeTitle}</title>
     <style>
       @page { margin: 0.25in; }
       html, body { margin: 0; padding: 0; }
@@ -374,16 +378,14 @@ function printHtmlDoc(bodyHtml, title, extraStyle) {
       ${extraStyle || ''}
     </style>
   </head><body>${bodyHtml}</body></html>`);
-  doc.close();
+  printWindow.document.close();
 
-  const cleanup = () => { if (iframe.parentNode) iframe.parentNode.removeChild(iframe); };
   const doPrint = () => {
-    iframe.contentWindow.focus();
-    iframe.contentWindow.print();
-    setTimeout(cleanup, 1000);
+    printWindow.focus();
+    printWindow.print();
   };
 
-  const imgs = Array.from(doc.images);
+  const imgs = Array.from(printWindow.document.images);
   if (imgs.length === 0) { doPrint(); return; }
   let remaining = imgs.length;
   const onOneDone = () => { remaining--; if (remaining <= 0) doPrint(); };
@@ -422,7 +424,7 @@ function buildLabelQrDataUrl(item, boxIndex, boxCount) {
   const qr = qrcode(0, 'M'); // type 0 = auto size, M = medium error correction
   qr.addData(payload);
   qr.make();
-  return qr.createDataURL(6, 4); // 6px per module, 4-module quiet margin
+  return qr.createDataURL(10, 4); // 10px per module (sharper at the larger print size), 4-module quiet margin
 }
 
 // Prints one label per box (box_count on the item) in a single print job, each
@@ -452,17 +454,23 @@ function printLabel(item) {
   }
 
   const style = `
-    @page { size: 4in 2in; margin: 0.1in; }
+    @page { size: 4in 6in; margin: 0.2in; }
     body { font-family: Arial, Helvetica, sans-serif; }
-    .label-page { display:flex; align-items:center; justify-content:center; width:100%; min-height:1.8in; page-break-after: always; }
+    .label-page {
+      display:flex; align-items:center; justify-content:center;
+      width:100%; height:5.6in; page-break-after: always;
+    }
     .label-page:last-child { page-break-after: auto; }
-    .label { display:flex; gap:0.15in; align-items:center; width:3.8in; }
-    .qr { width:1.6in; height:1.6in; flex-shrink:0; image-rendering:pixelated; }
-    .fields { flex:1; display:flex; flex-direction:column; justify-content:center; gap:3px; min-width:0; }
-    .desc { font-size:14pt; font-weight:bold; line-height:1.15; word-break:break-word; }
-    .row { font-size:11pt; }
-    .box-line { font-weight:bold; }
-    .code { font-size:9pt; color:#555; margin-top:4px; letter-spacing:1px; }
+    .label {
+      display:flex; flex-direction:column; align-items:center; text-align:center;
+      width:3.6in; gap:0.18in;
+    }
+    .qr { width:2.9in; height:2.9in; image-rendering:pixelated; }
+    .fields { display:flex; flex-direction:column; align-items:center; gap:6px; width:100%; }
+    .desc { font-size:20pt; font-weight:bold; line-height:1.2; word-break:break-word; }
+    .row { font-size:15pt; }
+    .box-line { font-weight:bold; font-size:16pt; }
+    .code { font-size:12pt; color:#555; margin-top:6px; letter-spacing:1.5px; }
   `;
   printHtmlDoc(labelsHtml, item.description, style);
 }
