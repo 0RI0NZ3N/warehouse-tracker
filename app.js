@@ -410,7 +410,13 @@ function printImage(dataUrl, title) {
 // MIT-licensed "qrcode-generator" by Kazuhiko Arase). Runs fully offline,
 // no server involved.
 
-function buildLabelQrDataUrl(item, boxIndex, boxCount) {
+// Returns inline SVG markup (not a raster <img>) for the QR code. This
+// matters for print: browsers' print/PDF pipelines routinely ignore
+// `image-rendering: pixelated` and smooth a small raster QR image when
+// it's scaled up, blurring the modules together until scanners fail with
+// "no usable data." An SVG stays crisp at any print size since there's no
+// bitmap to smooth.
+function buildLabelQrSvg(item, boxIndex, boxCount) {
   const jobLine = item.capture_type === 'job' ? `Job ${item.job_number}` : 'Stock';
   const payload = [
     `ID:${item.label_code}`,
@@ -424,7 +430,7 @@ function buildLabelQrDataUrl(item, boxIndex, boxCount) {
   const qr = qrcode(0, 'M'); // type 0 = auto size, M = medium error correction
   qr.addData(payload);
   qr.make();
-  return qr.createDataURL(10, 4); // 10px per module (sharper at the larger print size), 4-module quiet margin
+  return qr.createSvgTag({ cellSize: 8, margin: 8, scalable: true });
 }
 
 // Prints one label per box (box_count on the item) in a single print job, each
@@ -436,11 +442,11 @@ function printLabel(item) {
 
   let labelsHtml = '';
   for (let i = 1; i <= boxCount; i++) {
-    const qrDataUrl = buildLabelQrDataUrl(item, i, boxCount);
+    const qrSvg = buildLabelQrSvg(item, i, boxCount);
     labelsHtml += `
       <div class="label-page">
         <div class="label">
-          <img class="qr" src="${qrDataUrl}">
+          <div class="qr">${qrSvg}</div>
           <div class="fields">
             <div class="desc">${esc(item.description)}</div>
             <div class="row">${esc(jobLine)}${item.group ? ' · ' + esc(item.group) : ''}</div>
@@ -465,7 +471,8 @@ function printLabel(item) {
       display:flex; flex-direction:column; align-items:center; text-align:center;
       width:3.6in; gap:0.18in;
     }
-    .qr { width:2.9in; height:2.9in; image-rendering:pixelated; }
+    .qr { width:2.9in; height:2.9in; }
+    .qr svg { width:100%; height:100%; display:block; }
     .fields { display:flex; flex-direction:column; align-items:center; gap:6px; width:100%; }
     .desc { font-size:20pt; font-weight:bold; line-height:1.2; word-break:break-word; }
     .row { font-size:15pt; }
